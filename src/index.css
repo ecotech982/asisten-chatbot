@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@layer components {
+  .markdown-content {
+    @apply leading-relaxed break-words;
+  }
+  .markdown-content p {
+    @apply mb-2 last:mb-0;
+  }
+  .markdown-content ul, .markdown-content ol {
+    @apply ml-4 mb-2 list-outside;
+  }
+  .markdown-content ul {
+    @apply list-disc;
+  }
+  .markdown-content ol {
+    @apply list-decimal;
+  }
+  .markdown-content li {
+    @apply mb-1;
+  }
+  .markdown-content strong {
+    @apply font-bold text-slate-900;
+  }
+  .markdown-content h1, .markdown-content h2, .markdown-content h3 {
+    @apply font-bold text-slate-900 mt-4 mb-2;
+  }
+  .markdown-content h1 { @apply text-xl; }
+  .markdown-content h2 { @apply text-lg; }
+  .markdown-content h3 { @apply text-base; }
+  .markdown-content code {
+    @apply bg-slate-100 px-1 rounded text-sm font-mono text-pink-600;
+  }
+  .markdown-content pre {
+    @apply bg-slate-900 text-slate-100 p-3 rounded-lg my-2 overflow-x-auto text-sm font-mono;
+  }
+}
