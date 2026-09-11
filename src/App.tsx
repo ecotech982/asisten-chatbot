@@ -26,6 +26,8 @@ import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 import ApiKeyModal from './components/ApiKeyModal';
 import { getEffectiveApiKey, maskApiKey, parseGeminiError } from './services/geminiKey';
+import { generateGeminiImage, editGeminiImage } from './services/geminiImageService';
+import { optimizeImageBase64 } from './services/imageOptimizer';
 
 // Extend window for AI Studio API Key selection
 declare global {
@@ -148,17 +150,20 @@ export default function App() {
       const systemInstruction = "Anda adalah AI Asisten yang profesional, sopan, dan rapi. Berikan jawaban dalam bahasa Indonesia yang baik dan benar. Hindari penggunaan simbol berlebihan seperti tanda bintang (*) jika tidak diperlukan untuk pemformatan yang sangat penting. Pastikan jawaban terstruktur dengan paragraf yang jelas.";
 
       if (selectedModel === 'text') {
+        const textMessages = activeChat.messages
+          .filter(m => !m.isError)
+          .slice(-8)
+          .map(m => ({
+            role: m.role,
+            parts: [{ text: m.text || "" }]
+          }))
+          .concat([{ role: 'user', parts: [{ text: currentInput || "Halo" }] }]);
+
         let response;
         try {
           response = await ai.models.generateContent({
             model: "gemini-3.8-flash",
-            contents: activeChat.messages
-              .filter(m => !m.isError)
-              .map(m => ({
-                role: m.role,
-                parts: [{ text: m.text || "" }]
-              }))
-              .concat([{ role: 'user', parts: [{ text: currentInput || "Halo" }] }]),
+            contents: textMessages,
             config: {
               systemInstruction: systemInstruction
             }
@@ -167,13 +172,7 @@ export default function App() {
           console.warn("Gemini 3.8 Flash gagal, mencoba fallback ke Gemini 3.6 Flash:", modelErr);
           response = await ai.models.generateContent({
             model: "gemini-3.6-flash",
-            contents: activeChat.messages
-              .filter(m => !m.isError)
-              .map(m => ({
-                role: m.role,
-                parts: [{ text: m.text || "" }]
-              }))
-              .concat([{ role: 'user', parts: [{ text: currentInput || "Halo" }] }]),
+            contents: textMessages,
             config: {
               systemInstruction: systemInstruction
             }
@@ -182,15 +181,18 @@ export default function App() {
         resultText = response.text || "Maaf, saya tidak dapat merespons saat ini.";
 
       } else if (selectedModel === 'text-fast' || selectedModel === 'text-pro') {
+        const textMessages = activeChat.messages
+          .filter(m => !m.isError)
+          .slice(-8)
+          .map(m => ({
+            role: m.role,
+            parts: [{ text: m.text || "" }]
+          }))
+          .concat([{ role: 'user', parts: [{ text: currentInput || "Halo" }] }]);
+
         const response = await ai.models.generateContent({
           model: "gemini-3.6-flash",
-          contents: activeChat.messages
-            .filter(m => !m.isError)
-            .map(m => ({
-              role: m.role,
-              parts: [{ text: m.text || "" }]
-            }))
-            .concat([{ role: 'user', parts: [{ text: currentInput || "Halo" }] }]),
+          contents: textMessages,
           config: {
             systemInstruction: systemInstruction
           }
@@ -200,114 +202,22 @@ export default function App() {
       } else if (selectedModel === 'image-gen') {
         if (!currentInput) throw new Error("Mohon masukkan deskripsi untuk membuat gambar.");
         
-        let response;
-        const candidateModels = [
-          'gemini-3.1-flash-lite-image',
-          'gemini-3.1-flash-image',
-          'gemini-2.5-flash-image'
-        ];
-        let lastErr: any = null;
-
-        for (const modelName of candidateModels) {
-          try {
-            response = await ai.models.generateContent({
-              model: modelName,
-              contents: {
-                parts: [{ text: currentInput }],
-              },
-              config: {
-                imageConfig: {
-                  aspectRatio: aspectRatio,
-                },
-                systemInstruction: systemInstruction,
-              },
-            });
-            if (response?.candidates?.[0]?.content?.parts?.some((p: any) => p.inlineData)) {
-              break;
-            }
-          } catch (modelErr: any) {
-            console.warn(`Model ${modelName} gagal:`, modelErr);
-            lastErr = modelErr;
-          }
-        }
-
-        if (!response) {
-          throw lastErr || new Error("Gagal membuat gambar dengan model Google Gemini yang tersedia.");
-        }
-
-        const parts = response.candidates?.[0]?.content?.parts || [];
-        for (const part of parts) {
-          if (part.inlineData) {
-            resultImg = `data:image/png;base64,${part.inlineData.data}`;
-            resultText = "Berikut adalah gambar yang berhasil dibuat sesuai deskripsi Anda:";
-          } else if (part.text) {
-            resultText = part.text;
-          }
-        }
-        
-        if (!resultImg && !resultText) {
-          throw new Error("Gagal menerima data gambar dari Gemini API.");
-        }
+        // Multi-layer resilient image generation with quota failover & Smart Visual Engine
+        const genResult = await generateGeminiImage(currentInput, aspectRatio);
+        resultImg = genResult.imageUrl;
+        resultText = genResult.infoMessage || "Berikut adalah gambar yang berhasil dibuat sesuai deskripsi Anda:";
 
       } else if (selectedModel === 'image-edit') {
         if (!currentImg) throw new Error("Mohon unggah gambar terlebih dahulu untuk diedit.");
         
-        const mimeTypeMatch = currentImg.match(/data:(.*?);/);
-        const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
-        const base64Data = currentImg.split(',')[1];
-        
-        const parts: any[] = [
-          {
-            inlineData: { mimeType: mimeType, data: base64Data }
-          },
-          { 
-            text: currentInput || "Tolong edit dan sesuaikan gambar ini." 
-          }
-        ];
-
-        let response;
-        const candidateModels = [
-          'gemini-3.1-flash-lite-image',
-          'gemini-3.1-flash-image',
-          'gemini-2.5-flash-image'
-        ];
-        let lastErr: any = null;
-
-        for (const modelName of candidateModels) {
-          try {
-            response = await ai.models.generateContent({
-              model: modelName,
-              contents: { parts: parts },
-              config: {
-                systemInstruction: systemInstruction,
-              },
-            });
-            if (response?.candidates?.[0]?.content?.parts?.some((p: any) => p.inlineData)) {
-              break;
-            }
-          } catch (editErr: any) {
-            console.warn(`Model edit ${modelName} gagal:`, editErr);
-            lastErr = editErr;
-          }
-        }
-
-        if (!response) {
-          throw lastErr || new Error("Gagal mengedit gambar dengan model Google Gemini yang tersedia.");
-        }
-
-        const resParts = response.candidates?.[0]?.content?.parts || [];
-        for (const part of resParts) {
-          if (part.inlineData) {
-            resultImg = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-          } else if (part.text) {
-            resultText = part.text;
-          }
-        }
-
-        if (!resultImg && !resultText) {
-          throw new Error("Gagal menerima hasil pengeditan gambar dari Gemini API.");
-        }
-        if (!resultText) resultText = "Gambar berhasil diproses dan diedit.";
+        // Multi-layer resilient image editing with payload optimization & quota failover
+        const editResult = await editGeminiImage(
+          currentImg, 
+          currentInput || "Tolong edit dan sempurnakan gambar ini", 
+          aspectRatio
+        );
+        resultImg = editResult.imageUrl;
+        resultText = editResult.infoMessage || "Gambar berhasil diproses dan diedit.";
       }
 
       // Save AI response
@@ -797,8 +707,14 @@ export default function App() {
                   const f = e.target.files?.[0];
                   if(f) { 
                     const r = new FileReader(); 
-                    r.onload = (ev) => {
-                      setUploadedImage(ev.target?.result as string);
+                    r.onload = async (ev) => {
+                      const rawData = ev.target?.result as string;
+                      try {
+                        const optimized = await optimizeImageBase64(rawData, 1024, 0.85);
+                        setUploadedImage(optimized.optimizedUrl);
+                      } catch {
+                        setUploadedImage(rawData);
+                      }
                       if (selectedModel === 'text') setSelectedModel('image-edit');
                     }; 
                     r.readAsDataURL(f); 

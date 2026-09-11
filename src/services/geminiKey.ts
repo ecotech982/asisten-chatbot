@@ -6,6 +6,8 @@
 import { GoogleGenAI } from "@google/genai";
 
 const STORAGE_KEY = "gemini_local_api_key";
+const STORAGE_KEY_BACKUP = "gemini_local_api_key_backup";
+const STORAGE_KEY_SMART_ENGINE = "gemini_smart_engine_enabled";
 
 export function getLocalApiKey(): string {
   try {
@@ -35,6 +37,51 @@ export function removeLocalApiKey(): void {
   }
 }
 
+export function getLocalBackupApiKey(): string {
+  try {
+    return localStorage.getItem(STORAGE_KEY_BACKUP) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setLocalBackupApiKey(key: string): void {
+  try {
+    if (key.trim()) {
+      localStorage.setItem(STORAGE_KEY_BACKUP, key.trim());
+    } else {
+      localStorage.removeItem(STORAGE_KEY_BACKUP);
+    }
+  } catch (e) {
+    console.error("Gagal menyimpan Backup API key ke localStorage:", e);
+  }
+}
+
+export function removeLocalBackupApiKey(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY_BACKUP);
+  } catch (e) {
+    console.error("Gagal menghapus Backup API key dari localStorage:", e);
+  }
+}
+
+export function isSmartEngineEnabled(): boolean {
+  try {
+    const val = localStorage.getItem(STORAGE_KEY_SMART_ENGINE);
+    return val === null ? true : val === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function setSmartEngineEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_SMART_ENGINE, String(enabled));
+  } catch (e) {
+    console.error("Gagal menyimpan preferensi Smart Engine:", e);
+  }
+}
+
 export function getEnvApiKey(): string {
   const envKey = process.env.GEMINI_API_KEY || (import.meta as any)?.env?.VITE_GEMINI_API_KEY || "";
   return envKey.trim();
@@ -52,6 +99,21 @@ export function getEffectiveApiKey(): { key: string; source: "local" | "env" | "
   return { key: "", source: "none" };
 }
 
+export function getEffectiveApiKeys(): {
+  primary: { key: string; source: "local" | "env" | "none" };
+  backup: { key: string; source: "local" | "none" };
+} {
+  const primary = getEffectiveApiKey();
+  const backupKey = getLocalBackupApiKey().trim();
+  return {
+    primary,
+    backup: {
+      key: backupKey,
+      source: backupKey ? "local" : "none",
+    },
+  };
+}
+
 export function maskApiKey(key: string): string {
   if (!key) return "";
   if (key.length <= 8) return "••••••••";
@@ -63,6 +125,7 @@ export function parseGeminiError(err: any): {
   isKeyProblem: boolean; 
   isPermissionDenied: boolean; 
   isQuota: boolean;
+  isFreeTierZeroQuota: boolean;
 } {
   const rawMsg = err?.message || String(err || "");
   let statusCode = 0;
@@ -83,13 +146,15 @@ export function parseGeminiError(err: any): {
   const isPermissionDenied = statusCode === 403 || statusStr === "PERMISSION_DENIED" || rawMsg.includes("PERMISSION_DENIED");
   const isKeyInvalid = rawMsg.includes("API_KEY_INVALID") || rawMsg.includes("API key not valid") || rawMsg.includes("API_KEY");
   const isQuota = statusCode === 429 || statusStr === "RESOURCE_EXHAUSTED" || rawMsg.includes("RESOURCE_EXHAUSTED") || rawMsg.includes("quota") || rawMsg.includes("Quota exceeded");
+  const isFreeTierZeroQuota = rawMsg.includes("limit: 0") || rawMsg.includes("FreeTier");
 
   if (isPermissionDenied) {
     return {
-      message: "Akses Ditolak (403 PERMISSION_DENIED). Kunci API tidak memiliki izin atau dibatasi. Pastikan Anda membuat API key di Google AI Studio (https://aistudio.google.com/apikey) tanpa pembatasan HTTP referrer/IP yang memblokir aplikasi ini.",
+      message: "Akses Ditolak (403 PERMISSION_DENIED). Kunci API tidak memiliki izin atau dibatasi. Pastikan Anda membuat API key di Google AI Studio (https://aistudio.google.com/apikey) tanpa pembatasan HTTP referrer/IP yang memblokir domain Vercel Anda.",
       isKeyProblem: true,
       isPermissionDenied: true,
       isQuota: false,
+      isFreeTierZeroQuota: false,
     };
   }
 
@@ -99,15 +164,26 @@ export function parseGeminiError(err: any): {
       isKeyProblem: true,
       isPermissionDenied: false,
       isQuota: false,
+      isFreeTierZeroQuota: false,
     };
   }
 
   if (isQuota) {
+    if (isFreeTierZeroQuota) {
+      return {
+        message: "Batas kuota model gambar native Google AI Studio Free Tier (Limit 0). Akun Google AI Studio gratis membatasi model visual. Smart Visual Engine lokal telah diaktifkan otomatis agar pembuatan dan pengeditan gambar Anda di Vercel tetap berhasil.",
+        isKeyProblem: false,
+        isPermissionDenied: false,
+        isQuota: true,
+        isFreeTierZeroQuota: true,
+      };
+    }
     return {
-      message: "Batas kuota (Rate Limit/Quota 429) tercapai untuk model ini. Untuk fitur AI Image Creator dan AI Image Editor, pastikan Anda menghubungkan API Key Google Gemini pribadi Anda di pengaturan (tersimpan secara lokal di browser) dengan kuota yang memadai.",
+      message: "Batas kuota token / rate limit (429 RESOURCE_EXHAUSTED) tercapai. Anda dapat memasukkan kunci API Gemini cadangan di pengaturan atau mengaktifkan Smart Visual Engine agar bebas kendala batas kuota.",
       isKeyProblem: true,
       isPermissionDenied: false,
       isQuota: true,
+      isFreeTierZeroQuota: false,
     };
   }
 
@@ -116,6 +192,7 @@ export function parseGeminiError(err: any): {
     isKeyProblem: false,
     isPermissionDenied: false,
     isQuota: false,
+    isFreeTierZeroQuota: false,
   };
 }
 
