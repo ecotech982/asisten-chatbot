@@ -65,6 +65,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
   const [input, setInput] = useState('');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [aspectRatio, setAspectRatio] = useState<"1:1" | "16:9" | "9:16" | "4:3" | "3:4">("1:1");
   const [isTyping, setIsTyping] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
@@ -200,95 +201,113 @@ export default function App() {
         if (!currentInput) throw new Error("Mohon masukkan deskripsi untuk membuat gambar.");
         
         let response;
-        try {
-          response = await ai.models.generateContent({
-            model: 'gemini-3.1-flash-lite-image',
-            contents: {
-              parts: [{ text: currentInput }],
-            },
-            config: {
-              imageConfig: {
-                aspectRatio: "1:1"
+        const candidateModels = [
+          'gemini-3.1-flash-lite-image',
+          'gemini-3.1-flash-image',
+          'gemini-2.5-flash-image'
+        ];
+        let lastErr: any = null;
+
+        for (const modelName of candidateModels) {
+          try {
+            response = await ai.models.generateContent({
+              model: modelName,
+              contents: {
+                parts: [{ text: currentInput }],
               },
-              systemInstruction: systemInstruction
-            },
-          });
-        } catch (imageErr: any) {
-          console.warn("Primary image model failed, trying fallback:", imageErr);
-          response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image',
-            contents: {
-              parts: [{ text: currentInput }],
-            },
-            config: {
-              imageConfig: {
-                aspectRatio: "1:1"
+              config: {
+                imageConfig: {
+                  aspectRatio: aspectRatio,
+                },
+                systemInstruction: systemInstruction,
               },
-              systemInstruction: systemInstruction
-            },
-          });
+            });
+            if (response?.candidates?.[0]?.content?.parts?.some((p: any) => p.inlineData)) {
+              break;
+            }
+          } catch (modelErr: any) {
+            console.warn(`Model ${modelName} gagal:`, modelErr);
+            lastErr = modelErr;
+          }
+        }
+
+        if (!response) {
+          throw lastErr || new Error("Gagal membuat gambar dengan model Google Gemini yang tersedia.");
         }
 
         const parts = response.candidates?.[0]?.content?.parts || [];
         for (const part of parts) {
           if (part.inlineData) {
             resultImg = `data:image/png;base64,${part.inlineData.data}`;
-            resultText = "Berikut adalah gambar yang berhasil dibuat berdasarkan deskripsi Anda.";
+            resultText = "Berikut adalah gambar yang berhasil dibuat sesuai deskripsi Anda:";
           } else if (part.text) {
             resultText = part.text;
           }
         }
         
         if (!resultImg && !resultText) {
-          throw new Error("Gagal menerima data gambar dari server.");
+          throw new Error("Gagal menerima data gambar dari Gemini API.");
         }
 
       } else if (selectedModel === 'image-edit') {
         if (!currentImg) throw new Error("Mohon unggah gambar terlebih dahulu untuk diedit.");
         
-        const parts: any[] = [];
         const mimeTypeMatch = currentImg.match(/data:(.*?);/);
         const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
         const base64Data = currentImg.split(',')[1];
         
-        parts.push({
-          inlineData: { mimeType: mimeType, data: base64Data }
-        });
-        parts.push({ text: currentInput || "Tolong edit gambar ini sesuai instruksi." });
+        const parts: any[] = [
+          {
+            inlineData: { mimeType: mimeType, data: base64Data }
+          },
+          { 
+            text: currentInput || "Tolong edit dan sesuaikan gambar ini." 
+          }
+        ];
 
         let response;
-        try {
-          response = await ai.models.generateContent({
-            model: "gemini-3.1-flash-lite-image",
-            contents: { role: "user", parts: parts },
-            config: {
-              systemInstruction: systemInstruction
+        const candidateModels = [
+          'gemini-3.1-flash-lite-image',
+          'gemini-3.1-flash-image',
+          'gemini-2.5-flash-image'
+        ];
+        let lastErr: any = null;
+
+        for (const modelName of candidateModels) {
+          try {
+            response = await ai.models.generateContent({
+              model: modelName,
+              contents: { parts: parts },
+              config: {
+                systemInstruction: systemInstruction,
+              },
+            });
+            if (response?.candidates?.[0]?.content?.parts?.some((p: any) => p.inlineData)) {
+              break;
             }
-          });
-        } catch (editErr: any) {
-          console.warn("Primary edit image model failed, trying fallback:", editErr);
-          response = await ai.models.generateContent({
-            model: "gemini-2.5-flash-image",
-            contents: { role: "user", parts: parts },
-            config: {
-              systemInstruction: systemInstruction
-            }
-          });
+          } catch (editErr: any) {
+            console.warn(`Model edit ${modelName} gagal:`, editErr);
+            lastErr = editErr;
+          }
+        }
+
+        if (!response) {
+          throw lastErr || new Error("Gagal mengedit gambar dengan model Google Gemini yang tersedia.");
         }
 
         const resParts = response.candidates?.[0]?.content?.parts || [];
         for (const part of resParts) {
           if (part.inlineData) {
-            resultImg = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+            resultImg = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
           } else if (part.text) {
             resultText = part.text;
           }
         }
 
         if (!resultImg && !resultText) {
-          throw new Error("Gagal menerima hasil pengeditan gambar.");
+          throw new Error("Gagal menerima hasil pengeditan gambar dari Gemini API.");
         }
-        if (!resultText) resultText = "Proses pengeditan selesai.";
+        if (!resultText) resultText = "Gambar berhasil diproses dan diedit.";
       }
 
       // Save AI response
@@ -468,14 +487,104 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
           {activeChat.messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center opacity-70 text-center max-w-sm mx-auto mt-[-5%]">
-              <div className="w-20 h-20 bg-blue-100 rounded-3xl flex items-center justify-center mb-6 shadow-sm">
-                <Bot className="w-10 h-10 text-blue-600" />
-              </div>
-              <h3 className="text-2xl font-bold text-slate-800 mb-2">Siap Membantu Anda</h3>
-              <p className="text-slate-500 text-sm leading-relaxed">
-                Pilih mode di atas untuk menulis teks, membuat gambar dari deskripsi, atau menganalisis visual.
-              </p>
+            <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto py-8">
+              {selectedModel === 'image-gen' ? (
+                <div className="space-y-4">
+                  <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-3xl flex items-center justify-center mx-auto shadow-md text-white">
+                    <ImageIcon className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-800">AI Image Creator</h3>
+                    <p className="text-slate-500 text-xs mt-1 max-w-sm mx-auto leading-relaxed">
+                      Ditenagai model visual Google Gemini dengan kunci API Anda. Tuliskan deskripsi gambar yang ingin Anda buat di bawah.
+                    </p>
+                  </div>
+                  <div className="pt-2 text-left space-y-2">
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center">
+                      Contoh Prompt Cepat:
+                    </p>
+                    <div className="grid gap-2">
+                      {[
+                        "Pemandangan sakura bermekaran di tepi danau dengan pantulan Gunung Fuji saat matahari terbit, lukisan cat air",
+                        "Astronot kucing lucu melayang di orbit bumi mengenakan helm kaca bercahaya, 3D render hiperrealistis",
+                        "Desain logo minimalis modern kepala serigala dengan gradasi biru elektrik dan latar belakang gelap"
+                      ].map((promptText, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setInput(promptText)}
+                          className="text-left text-xs bg-slate-50 hover:bg-blue-50/70 border border-slate-200 hover:border-blue-300 text-slate-700 p-2.5 rounded-xl transition-colors cursor-pointer"
+                        >
+                          &ldquo;{promptText}&rdquo;
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : selectedModel === 'image-edit' ? (
+                <div className="space-y-4">
+                  <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-purple-600 rounded-3xl flex items-center justify-center mx-auto shadow-md text-white">
+                    <Edit3 className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-800">AI Image Editor</h3>
+                    <p className="text-slate-500 text-xs mt-1 max-w-sm mx-auto leading-relaxed">
+                      Edit dan ubah gambar menggunakan AI Gemini dengan instruksi teks. Unggah gambar untuk memulai!
+                    </p>
+                  </div>
+
+                  {!uploadedImage ? (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="inline-flex items-center gap-2 px-5 py-3 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-2xl text-xs font-semibold shadow-sm transition-all cursor-pointer"
+                    >
+                      <UploadCloud className="w-4 h-4" />
+                      Pilih Gambar untuk Diedit
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-2xl flex items-center justify-center gap-3">
+                      <img src={uploadedImage} className="w-12 h-12 object-cover rounded-lg border border-indigo-200" alt="Preview" referrerPolicy="no-referrer" />
+                      <div className="text-left text-xs">
+                        <p className="font-semibold text-indigo-900">Gambar Terpasang</p>
+                        <p className="text-indigo-700">Tulis instruksi perubahan pada kolom di bawah.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 text-left space-y-2">
+                    <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center">
+                      Contoh Instruksi Edit:
+                    </p>
+                    <div className="grid gap-2">
+                      {[
+                        "Ubah latar belakang foto menjadi pemandangan matahari terbenam di pegunungan bersalju",
+                        "Tambahkan kacamata hitam gaya retro dan topi fedora pada karakter di gambar",
+                        "Ubah gaya visual gambar menjadi lukisan minyak impresionis warna-warni"
+                      ].map((editInstruction, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setInput(editInstruction)}
+                          className="text-left text-xs bg-slate-50 hover:bg-indigo-50/70 border border-slate-200 hover:border-indigo-300 text-slate-700 p-2.5 rounded-xl transition-colors cursor-pointer"
+                        >
+                          &ldquo;{editInstruction}&rdquo;
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3 opacity-80">
+                  <div className="w-16 h-16 bg-blue-100 rounded-3xl flex items-center justify-center mx-auto shadow-xs">
+                    <Bot className="w-8 h-8 text-blue-600" />
+                  </div>
+                  <h3 className="text-xl font-bold text-slate-800">Siap Membantu Anda</h3>
+                  <p className="text-slate-500 text-xs leading-relaxed max-w-sm mx-auto">
+                    Tanyakan apa saja, buat gambar visual baru, atau minta AI mengedit gambar menggunakan Google Gemini API.
+                  </p>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-6 pb-4">
@@ -504,13 +613,27 @@ export default function App() {
                           )}
                         </div>
                         {msg.role === 'model' && (
-                          <button 
-                            onClick={() => handleDownload(msg.imageUrl!, `ai-asisten-${Date.now()}.png`)}
-                            className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors w-fit self-start"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                            Unduh Gambar
-                          </button>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button 
+                              onClick={() => handleDownload(msg.imageUrl!, `ai-asisten-${Date.now()}.png`)}
+                              className="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors shadow-xs"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              Unduh Gambar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setUploadedImage(msg.imageUrl!);
+                                setSelectedModel('image-edit');
+                              }}
+                              className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg transition-colors shadow-xs"
+                              title="Kirim ke AI Image Editor untuk diedit lebih lanjut"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              Edit di Image Editor
+                            </button>
+                          </div>
                         )}
                       </div>
                     )}
@@ -582,6 +705,75 @@ export default function App() {
                 <button onClick={() => setUploadedImage(null)} className="p-1.5 hover:bg-red-50 text-red-500 rounded-lg ml-auto transition-colors">
                   <X className="w-4 h-4"/>
                 </button>
+              </div>
+            )}
+
+            {/* Image Creator & Editor Controls Toolbar */}
+            {selectedModel === 'image-gen' && (
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-2 px-1 text-xs">
+                <div className="flex items-center gap-1.5 text-slate-500">
+                  <span className="font-semibold text-slate-700">Rasio:</span>
+                  {(['1:1', '16:9', '9:16', '4:3', '3:4'] as const).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setAspectRatio(r)}
+                      className={`px-2 py-0.5 rounded-md font-mono text-[11px] transition-all cursor-pointer ${
+                        aspectRatio === r
+                          ? 'bg-blue-600 text-white font-bold shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className={`inline-block w-2 h-2 rounded-full ${apiKeyInfo.source === 'local' ? 'bg-emerald-500' : apiKeyInfo.source === 'env' ? 'bg-blue-500' : 'bg-amber-500'}`} />
+                  <span className="text-slate-600">
+                    {apiKeyInfo.source === 'local' 
+                      ? `Kunci Lokal (${maskApiKey(apiKeyInfo.key)})` 
+                      : apiKeyInfo.source === 'env' 
+                        ? 'Kunci Sistem' 
+                        : 'Belum Ada Kunci'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsApiKeyModalOpen(true)}
+                    className="text-blue-600 hover:underline font-medium cursor-pointer"
+                  >
+                    {apiKeyInfo.source === 'local' ? 'Kelola' : 'Gunakan Kunci Lokal'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {selectedModel === 'image-edit' && (
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-2 px-1 text-xs">
+                <div className="flex items-center gap-1.5 text-slate-600">
+                  <Edit3 className="w-3.5 h-3.5 text-indigo-600" />
+                  <span className="font-medium">
+                    {uploadedImage ? "✓ Gambar terpasang. Tulis instruksi edit di bawah." : "Unggah gambar terlebih dahulu dengan tombol ikon di bawah"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px]">
+                  <span className={`inline-block w-2 h-2 rounded-full ${apiKeyInfo.source === 'local' ? 'bg-emerald-500' : apiKeyInfo.source === 'env' ? 'bg-blue-500' : 'bg-amber-500'}`} />
+                  <span className="text-slate-600">
+                    {apiKeyInfo.source === 'local' 
+                      ? `Kunci Lokal (${maskApiKey(apiKeyInfo.key)})` 
+                      : apiKeyInfo.source === 'env' 
+                        ? 'Kunci Sistem' 
+                        : 'Belum Ada Kunci'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsApiKeyModalOpen(true)}
+                    className="text-blue-600 hover:underline font-medium cursor-pointer"
+                  >
+                    {apiKeyInfo.source === 'local' ? 'Kelola' : 'Gunakan Kunci Lokal'}
+                  </button>
+                </div>
               </div>
             )}
             

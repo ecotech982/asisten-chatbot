@@ -21,7 +21,9 @@ import {
   getEffectiveApiKey,
   maskApiKey,
   testGeminiApiKey,
+  testGeminiImageKey,
 } from "../services/geminiKey";
+import { ImageIcon } from "lucide-react";
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -33,6 +35,7 @@ export default function ApiKeyModal({ isOpen, onClose, onKeyUpdated }: ApiKeyMod
   const [inputKey, setInputKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isTestingImage, setIsTestingImage] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [activeInfo, setActiveInfo] = useState(getEffectiveApiKey());
@@ -90,6 +93,25 @@ export default function ApiKeyModal({ isOpen, onClose, onKeyUpdated }: ApiKeyMod
       setTestResult(res);
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const handleTestImage = async () => {
+    const keyToTest = inputKey.trim() || activeInfo.key;
+    if (!keyToTest) {
+      setTestResult({
+        success: false,
+        message: "Masukkan API key terlebih dahulu untuk menguji fitur gambar.",
+      });
+      return;
+    }
+    setIsTestingImage(true);
+    setTestResult(null);
+    try {
+      const res = await testGeminiImageKey(keyToTest);
+      setTestResult(res);
+    } finally {
+      setIsTestingImage(false);
     }
   };
 
@@ -289,7 +311,7 @@ export default function ApiKeyModal({ isOpen, onClose, onKeyUpdated }: ApiKeyMod
               id="test-api-key-btn"
               type="button"
               onClick={handleTest}
-              disabled={isTesting || (!inputKey && !activeInfo.key)}
+              disabled={isTesting || isTestingImage || (!inputKey && !activeInfo.key)}
               className="bg-slate-100 hover:bg-slate-200 active:bg-slate-300 disabled:opacity-50 text-slate-700 font-medium py-2.5 px-3.5 rounded-xl transition-all text-xs flex items-center gap-1.5"
             >
               {isTesting ? (
@@ -297,7 +319,22 @@ export default function ApiKeyModal({ isOpen, onClose, onKeyUpdated }: ApiKeyMod
               ) : (
                 <Sparkles className="w-4 h-4 text-blue-600" />
               )}
-              Uji Koneksi
+              Uji Teks
+            </button>
+
+            <button
+              id="test-image-api-key-btn"
+              type="button"
+              onClick={handleTestImage}
+              disabled={isTesting || isTestingImage || (!inputKey && !activeInfo.key)}
+              className="bg-indigo-50 hover:bg-indigo-100 active:bg-indigo-200 text-indigo-700 disabled:opacity-50 font-medium py-2.5 px-3.5 rounded-xl transition-all text-xs flex items-center gap-1.5 border border-indigo-200"
+            >
+              {isTestingImage ? (
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+              ) : (
+                <ImageIcon className="w-4 h-4 text-indigo-600" />
+              )}
+              Uji Gambar
             </button>
 
             {getLocalApiKey() && (
@@ -311,6 +348,17 @@ export default function ApiKeyModal({ isOpen, onClose, onKeyUpdated }: ApiKeyMod
                 <Trash2 className="w-4 h-4" />
               </button>
             )}
+          </div>
+
+          {/* Feature Badge for Image Creator & Editor */}
+          <div className="p-3 bg-gradient-to-r from-blue-50/80 to-indigo-50/80 rounded-xl border border-blue-100 text-xs text-slate-600 space-y-1">
+            <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+              <ImageIcon className="w-3.5 h-3.5 text-blue-600" />
+              Koneksi AI Image Creator & AI Image Editor:
+            </div>
+            <p className="leading-relaxed">
+              Kunci API lokal ini langsung terhubung ke fitur <strong>AI Image Creator</strong> (pembuat gambar baru) dan <strong>AI Image Editor</strong> (pengubah gambar visual). Dengan kunci pribadi dari Google AI Studio, proses pembuatan gambar tidak dibatasi kuota publik.
+            </p>
           </div>
 
           {/* How to get API Key */}

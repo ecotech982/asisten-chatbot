@@ -82,7 +82,7 @@ export function parseGeminiError(err: any): {
 
   const isPermissionDenied = statusCode === 403 || statusStr === "PERMISSION_DENIED" || rawMsg.includes("PERMISSION_DENIED");
   const isKeyInvalid = rawMsg.includes("API_KEY_INVALID") || rawMsg.includes("API key not valid") || rawMsg.includes("API_KEY");
-  const isQuota = statusCode === 429 || statusStr === "RESOURCE_EXHAUSTED" || rawMsg.includes("RESOURCE_EXHAUSTED") || rawMsg.includes("quota");
+  const isQuota = statusCode === 429 || statusStr === "RESOURCE_EXHAUSTED" || rawMsg.includes("RESOURCE_EXHAUSTED") || rawMsg.includes("quota") || rawMsg.includes("Quota exceeded");
 
   if (isPermissionDenied) {
     return {
@@ -95,7 +95,7 @@ export function parseGeminiError(err: any): {
 
   if (isKeyInvalid && !isPermissionDenied) {
     return {
-      message: "Kunci API tidak valid. Pastikan Anda menyalin seluruh karakter kunci (diawali dengan 'AIzaSy...').",
+      message: "Kunci API tidak valid. Pastikan Anda menyalin seluruh karakter kunci Google Gemini (diawali dengan 'AIzaSy...').",
       isKeyProblem: true,
       isPermissionDenied: false,
       isQuota: false,
@@ -104,8 +104,8 @@ export function parseGeminiError(err: any): {
 
   if (isQuota) {
     return {
-      message: "Batas kuota (Rate Limit/Quota) untuk API key ini telah habis. Silakan tunggu beberapa saat atau ganti dengan API key lain.",
-      isKeyProblem: false,
+      message: "Batas kuota (Rate Limit/Quota 429) tercapai untuk model ini. Untuk fitur AI Image Creator dan AI Image Editor, pastikan Anda menghubungkan API Key Google Gemini pribadi Anda di pengaturan (tersimpan secara lokal di browser) dengan kuota yang memadai.",
+      isKeyProblem: true,
       isPermissionDenied: false,
       isQuota: true,
     };
@@ -149,6 +149,48 @@ export async function testGeminiApiKey(apiKey: string): Promise<{ success: boole
     return { success: true, message: "Kunci API valid dan siap digunakan." };
   } catch (err: any) {
     console.error("Error validasi API Key:", err);
+    const parsed = parseGeminiError(err);
+    return { success: false, message: parsed.message };
+  }
+}
+
+export async function testGeminiImageKey(apiKey: string): Promise<{ success: boolean; message: string }> {
+  if (!apiKey.trim()) {
+    return { success: false, message: "Kunci API tidak boleh kosong." };
+  }
+  try {
+    const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+    const models = ["gemini-3.1-flash-lite-image", "gemini-3.1-flash-image", "gemini-2.5-flash-image"];
+    let lastErr: any = null;
+
+    for (const model of models) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: {
+            parts: [{ text: "simple red icon" }]
+          },
+          config: {
+            imageConfig: { aspectRatio: "1:1" }
+          }
+        });
+        if (response.candidates?.[0]?.content?.parts) {
+          return {
+            success: true,
+            message: `Fitur Image Creator & Editor aktif dan didukung oleh kunci Anda (Model: ${model})!`
+          };
+        }
+      } catch (err: any) {
+        lastErr = err;
+      }
+    }
+
+    if (lastErr) {
+      const parsed = parseGeminiError(lastErr);
+      return { success: false, message: parsed.message };
+    }
+    return { success: true, message: "Fitur gambar siap digunakan." };
+  } catch (err: any) {
     const parsed = parseGeminiError(err);
     return { success: false, message: parsed.message };
   }
