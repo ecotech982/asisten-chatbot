@@ -595,7 +595,13 @@ export default function App() {
               </div>
               <div className="bg-white px-5 py-3.5 rounded-2xl rounded-tl-sm border border-slate-200 flex gap-3 items-center text-slate-500 text-sm shadow-sm">
                 <Loader2 className="w-4 h-4 animate-spin text-blue-500" /> 
-                <span className="font-medium">AI sedang memproses...</span>
+                <span className="font-medium text-xs md:text-sm">
+                  {selectedModel === 'image-gen' 
+                    ? 'Sedang merancang dan menghasilkan gambar sesuai prompt Anda...' 
+                    : selectedModel === 'image-edit'
+                      ? 'Sedang menganalisis visual dan mengedit gambar sesuai instruksi...'
+                      : 'AI sedang berpikir dan mengetik respons...'}
+                </span>
               </div>
             </div>
           )}

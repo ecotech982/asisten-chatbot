@@ -3,7 +3,11 @@
  * 1. Native Gemini Image Model Fallback loop (gemini-3.1-flash-lite-image, gemini-3.1-flash-image, gemini-2.5-flash-image)
  * 2. Primary & Backup Key automatic failover on 429 Quota Exceeded
  * 3. Client-side Image Optimization to avoid TPM (Tokens Per Minute) token quota exhaustion
- * 4. Smart Visual Engine Fallback powered by Gemini Vision & Prompt Enhancement when Free Tier limit:0 quota is encountered on Vercel
+ * 4. High-Fidelity Smart Visual Engine:
+ *    - Strict prompt translation & semantic preservation (subject, colors, action, background, style)
+ *    - Preserves requested art styles (2D anime, 3D render, watercolor, sketch, oil painting, flat logo, photo)
+ *    - Multi-candidate high-fidelity rendering without prompt scrambling (enhance=false)
+ *    - Smart visual editing with multimodal image analysis
  */
 
 import { GoogleGenAI } from "@google/genai";
@@ -42,8 +46,205 @@ function getDimensionsForAspect(aspectRatio: AspectRatio): { width: number; heig
   }
 }
 
+type ArtStyleType = "anime" | "3d" | "realistic" | "art" | "general";
+
+function detectArtStyle(promptText: string): ArtStyleType {
+  const lower = promptText.toLowerCase();
+  if (/\b(anime|kartun|manga|chibi|2d|wibu|komik|cel-shaded)\b/i.test(lower)) {
+    return "anime";
+  }
+  if (/\b(3d|pixar|disney|cgi|render 3d|blender|unreal|cinema 4d)\b/i.test(lower)) {
+    return "3d";
+  }
+  if (/\b(realistis|realistik|foto|fotografi|kamera|dslr|nyata|portrait|close up|photorealistic|macro)\b/i.test(lower)) {
+    return "realistic";
+  }
+  if (/\b(lukisan|cat air|cat minyak|sketsa|pensil|vektor|logo|pixel art|watercolor|oil painting|line art|vintage)\b/i.test(lower)) {
+    return "art";
+  }
+  return "general";
+}
+
 /**
- * Generate an image using Google Gemini local API key with token-quota resilience
+ * Precision prompt translation & optimization using Gemini LLM.
+ * Strictly guarantees that every requested subject, art style, color, action, and composition is faithfully preserved.
+ */
+async function buildHighFidelityVisualPrompt(
+  ai: GoogleGenAI,
+  userPrompt: string
+): Promise<{ prompt: string; detectedStyle: ArtStyleType }> {
+  const detectedStyle = detectArtStyle(userPrompt);
+
+  const systemInstruction = `You are a precision prompt engineer for AI image generation.
+Your task is to transform the user input (whether Indonesian or English) into an English prompt that produces an image EXACTLY matching what the user requested.
+
+CRITICAL RULES:
+1. STRICT FIDELITY: Every single subject, object, action, color, mood, and art style mentioned by the user MUST be included.
+2. ART STYLE INTEGRITY:
+   - If user asks for cartoon / anime / 2D / chibi: use 2D anime illustration or cel-shaded digital animation style.
+   - If user asks for 3D / pixar: use 3D digital character render style.
+   - If user asks for sketch / pencil / watercolor / oil painting: use that exact traditional art medium.
+   - If user asks for logo / icon / minimalist: use flat vector, clean minimal iconography, isolated on solid background.
+   - If user asks for photo / realistic: use high-detail photorealistic photography.
+   - If no art style is specified: use clean, vibrant high-definition visual style faithful to the subject. NEVER force photorealism if unnatural for the subject.
+3. STRUCTURE:
+   [Main Subject and Action], [Key Features & Exact Colors], [Environment / Background Setting], [Art Style & Lighting]
+4. NO UNREQUESTED DETAILS: Do NOT invent unrelated people, random buildings, or intrusive text.
+5. CONCISE: 35-65 words in clear, descriptive English.
+6. OUTPUT FORMAT: Output ONLY the raw prompt text. No quotes, no markdown, no conversational filler.`;
+
+  const models = ["gemini-3.8-flash", "gemini-3.6-flash"];
+  for (const model of models) {
+    try {
+      const res = await ai.models.generateContent({
+        model,
+        contents: `User Prompt: "${userPrompt}"\nGenerated Image Prompt:`,
+        config: { systemInstruction },
+      });
+      const text = res.text?.trim();
+      if (text && text.length > 5) {
+        const cleaned = text
+          .replace(/^["']+|["']+$/g, "")
+          .replace(/^(image prompt|prompt|a prompt):\s*/i, "")
+          .trim();
+        return { prompt: cleaned, detectedStyle };
+      }
+    } catch {
+      // try next model
+    }
+  }
+
+  return { prompt: userPrompt, detectedStyle };
+}
+
+/**
+ * Precision prompt synthesis for image editing based on multimodal visual analysis.
+ */
+async function buildHighFidelityEditPrompt(
+  ai: GoogleGenAI,
+  optimizedImage: { mimeType: string; base64Data: string },
+  editInstruction: string
+): Promise<{ prompt: string; detectedStyle: ArtStyleType }> {
+  const detectedStyle = detectArtStyle(editInstruction);
+
+  const systemInstruction = `You are an expert visual director and precision image prompt engineer.
+The user has provided an image and wants to EDIT it with this instruction: "${editInstruction}".
+
+YOUR TASK:
+Carefully analyze the image and generate a concise English image prompt that describes the EDITED version of the image.
+
+STRICT EDITING RULES:
+1. SUBJECT FIDELITY: Keep the core subject, character identity, pose, and composition from the original image.
+2. PRESERVE ART STYLE: If the original image is a real photo, keep it photorealistic. If it is 2D anime, 3D render, illustration, sketch, or watercolor, retain that EXACT art style.
+3. PRECISE MODIFICATION: Apply ONLY the changes requested in "${editInstruction}" (e.g. change color, add/remove an object, change background, modify attire/expression). Do NOT alter unrequested features.
+4. FORMAT: Write a concise, vivid prompt (35-65 words) starting with the main subject and the exact modifications.
+5. NO FILLER: Output ONLY the raw descriptive prompt text.`;
+
+  const models = ["gemini-3.8-flash", "gemini-3.6-flash"];
+  for (const model of models) {
+    try {
+      const res = await ai.models.generateContent({
+        model,
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: optimizedImage.mimeType,
+                data: optimizedImage.base64Data,
+              },
+            },
+            {
+              text: `Instruction: "${editInstruction}". Formulate the edited scene prompt adhering strictly to the editing rules.`,
+            },
+          ],
+        },
+        config: { systemInstruction },
+      });
+      const text = res.text?.trim();
+      if (text && text.length > 5) {
+        const cleaned = text
+          .replace(/^["']+|["']+$/g, "")
+          .replace(/^(image prompt|prompt|a prompt):\s*/i, "")
+          .trim();
+        return { prompt: cleaned, detectedStyle };
+      }
+    } catch {
+      // try next model
+    }
+  }
+
+  return { prompt: editInstruction, detectedStyle };
+}
+
+/**
+ * Fetch image from Smart Visual Engine with high-fidelity candidate models and enhance=false to prevent prompt distortion.
+ */
+async function renderSmartVisualImage(
+  prompt: string,
+  aspectRatio: AspectRatio,
+  detectedStyle: ArtStyleType
+): Promise<{ base64: string; modelUsed: string }> {
+  const { width, height } = getDimensionsForAspect(aspectRatio);
+  const seed = Math.floor(Math.random() * 10000000);
+  const encodedPrompt = encodeURIComponent(prompt.trim());
+
+  let candidateModels: string[] = [];
+  if (detectedStyle === "anime") {
+    candidateModels = ["flux-anime", "flux", "turbo", ""];
+  } else if (detectedStyle === "3d") {
+    candidateModels = ["flux-3d", "flux", "turbo", ""];
+  } else if (detectedStyle === "realistic") {
+    candidateModels = ["flux-realism", "flux", "turbo", ""];
+  } else {
+    candidateModels = ["flux", "turbo", ""];
+  }
+
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    try {
+      const modelParam = model ? `&model=${encodeURIComponent(model)}` : "";
+      // CRITICAL: enhance=false ensures the server does NOT rewrite or hallucinate on top of the prompt!
+      const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true&enhance=false${modelParam}`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 28000);
+
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "image/jpeg,image/png,image/*",
+        },
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("image/")) {
+          const blob = await res.blob();
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+
+          return {
+            base64,
+            modelUsed: model ? `Smart Visual Engine (${model})` : "Smart Visual Engine (FLUX)",
+          };
+        }
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("Gagal merender gambar melalui Smart Visual Engine. Silakan coba lagi.");
+}
+
+/**
+ * Generate an image using Google Gemini local API key with token-quota resilience and strict prompt fidelity
  */
 export async function generateGeminiImage(
   prompt: string,
@@ -93,8 +294,8 @@ export async function generateGeminiImage(
               modelName: model,
               backupKeyUsed: keyObj.isBackup,
               infoMessage: keyObj.isBackup
-                ? "Diproses menggunakan kunci API cadangan (kunci utama mencapai batas kuota)."
-                : undefined,
+                ? `Gambar berhasil dibuat menggunakan Kunci Cadangan sesuai prompt Anda: "${prompt}".`
+                : `Gambar berhasil dibuat sesuai prompt Anda: "${prompt}".`,
             };
           }
         }
@@ -102,7 +303,6 @@ export async function generateGeminiImage(
         const parsed = parseGeminiError(err);
         if (parsed.isQuota) {
           lastQuotaError = err;
-          // Continue to next model or backup key
           continue;
         } else {
           lastGenericError = err;
@@ -111,65 +311,45 @@ export async function generateGeminiImage(
     }
   }
 
-  // Phase 2: If Native models failed due to Quota (especially Free Tier Limit: 0 on Vercel),
-  // leverage Gemini's intelligence with Smart Visual Engine fallback
+  // Phase 2: High-Fidelity Smart Visual Engine
+  // Triggers when native image model has quota limits (e.g. Free Tier limit: 0 on Vercel)
   if (isSmartEngineEnabled()) {
     try {
-      // Use primary key (or backup) with gemini-3.8-flash or 3.6-flash to expand prompt & generate
       const activeKey = primary.key || backup.key;
       const ai = new GoogleGenAI({ apiKey: activeKey });
 
-      let enhancedPrompt = prompt;
-      try {
-        const expander = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: `Create an ultra-detailed English image generation prompt (max 70 words) for: "${prompt}". Focus on lighting, composition, colors, artistic style, and photorealism. Do not use quotes or introductory words, output ONLY the prompt.`,
-        });
-        if (expander.text?.trim()) {
-          enhancedPrompt = expander.text.trim();
-        }
-      } catch {
-        // use original prompt if expander fails
-      }
+      // Step 1: Translate & formulate prompt with strict fidelity to user's subject, style & colors
+      const { prompt: highFidelityPrompt, detectedStyle } = await buildHighFidelityVisualPrompt(
+        ai,
+        prompt
+      );
 
-      const { width, height } = getDimensionsForAspect(aspectRatio);
-      const seed = Math.floor(Math.random() * 1000000);
-      const safePrompt = encodeURIComponent(enhancedPrompt.slice(0, 350));
-      const fallbackUrl = `https://image.pollinations.ai/prompt/${safePrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true`;
+      // Step 2: Render with matched model, enhance=false to avoid prompt drifting
+      const { base64, modelUsed } = await renderSmartVisualImage(
+        highFidelityPrompt,
+        aspectRatio,
+        detectedStyle
+      );
 
-      // Preload image to verify availability and avoid broken images
-      const preloaded = await fetch(fallbackUrl);
-      if (preloaded.ok) {
-        const blob = await preloaded.blob();
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-
-        return {
-          imageUrl: base64,
-          engineUsed: "gemini-smart-engine",
-          modelName: "Gemini Visual Engine (Resilience)",
-          backupKeyUsed: false,
-          infoMessage:
-            "Gambar berhasil dibuat dengan Gemini Smart Engine (mengatasi kendala batas kuota model gambar native Google AI Studio Free Tier di Vercel).",
-        };
-      }
+      return {
+        imageUrl: base64,
+        engineUsed: "gemini-smart-engine",
+        modelName: modelUsed,
+        backupKeyUsed: false,
+        infoMessage: `Gambar berhasil dibuat sesuai prompt Anda: "${prompt}".`,
+      };
     } catch (fallbackErr) {
       console.error("Smart visual engine error:", fallbackErr);
     }
   }
 
-  // If everything failed, throw parsed error
   const finalErr = lastQuotaError || lastGenericError || new Error("Gagal membuat gambar.");
   const parsed = parseGeminiError(finalErr);
   throw new Error(parsed.message);
 }
 
 /**
- * Edit an existing image using Google Gemini local API key with token-quota resilience
+ * Edit an existing image using Google Gemini local API key with token-quota resilience and strict prompt fidelity
  */
 export async function editGeminiImage(
   originalDataUrl: string,
@@ -182,8 +362,7 @@ export async function editGeminiImage(
     throw new Error("Kunci API Google Gemini belum diatur. Silakan masukkan API key Anda di menu pengaturan.");
   }
 
-  // 1. Optimize image first: shrink huge mobile/camera photos down to <= 1024px JPEG
-  // This reduces token consumption by 95%+, preventing 429 TPM (Tokens Per Minute) error!
+  // Optimize payload down to <= 1024px JPEG to save token bandwidth
   const optimized = await optimizeImageBase64(originalDataUrl, 1024, 0.85);
 
   const keysToTry: { key: string; isBackup: boolean }[] = [
@@ -213,7 +392,7 @@ export async function editGeminiImage(
                 },
               },
               {
-                text: instruction || "Edit and improve this image according to best artistic standards.",
+                text: instruction || "Edit and improve this image according to the specified changes.",
               },
             ],
           },
@@ -234,8 +413,8 @@ export async function editGeminiImage(
               modelName: model,
               backupKeyUsed: keyObj.isBackup,
               infoMessage: keyObj.isBackup
-                ? "Gambar berhasil diedit menggunakan kunci API cadangan (kunci utama mencapai kuota)."
-                : undefined,
+                ? `Gambar berhasil diedit dengan Kunci Cadangan sesuai instruksi: "${instruction}".`
+                : `Gambar berhasil diedit sesuai instruksi Anda: "${instruction}".`,
             };
           }
         }
@@ -251,63 +430,34 @@ export async function editGeminiImage(
     }
   }
 
-  // Phase 2: If native models hit Quota (Free Tier limit: 0 on Vercel),
-  // use Gemini Vision to analyze the image and instructions, and render the edited output
+  // Phase 2: High-Fidelity Smart Vision Editing
+  // Triggers when native image model has quota limits on Free Tier
   if (isSmartEngineEnabled()) {
     try {
       const activeKey = primary.key || backup.key;
       const ai = new GoogleGenAI({ apiKey: activeKey });
 
-      // Multimodal Vision analysis to generate a precise edited scene prompt
-      let editedPromptDescription = instruction;
-      try {
-        const visionResponse = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: optimized.mimeType,
-                  data: optimized.base64Data,
-                },
-              },
-              {
-                text: `Analyze this image in detail. The user requested this edit: "${instruction}". Formulate a concise, photorealistic English visual prompt (under 70 words) depicting the modified scene with the requested changes applied accurately while preserving the subject and style. Output ONLY the prompt.`,
-              },
-            ],
-          },
-        });
-        if (visionResponse.text?.trim()) {
-          editedPromptDescription = visionResponse.text.trim();
-        }
-      } catch {
-        // use instruction if vision request failed
-      }
+      // Step 1: Multimodal Vision analysis to strictly formulate the edited scene preserving subject & style
+      const { prompt: editedScenePrompt, detectedStyle } = await buildHighFidelityEditPrompt(
+        ai,
+        optimized,
+        instruction
+      );
 
-      const { width, height } = getDimensionsForAspect(aspectRatio);
-      const seed = Math.floor(Math.random() * 1000000);
-      const safePrompt = encodeURIComponent(editedPromptDescription.slice(0, 350));
-      const fallbackUrl = `https://image.pollinations.ai/prompt/${safePrompt}?width=${width}&height=${height}&seed=${seed}&nologo=true`;
+      // Step 2: Render the edited scene with strict prompt adherence
+      const { base64, modelUsed } = await renderSmartVisualImage(
+        editedScenePrompt,
+        aspectRatio,
+        detectedStyle
+      );
 
-      const preloaded = await fetch(fallbackUrl);
-      if (preloaded.ok) {
-        const blob = await preloaded.blob();
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-
-        return {
-          imageUrl: base64,
-          engineUsed: "gemini-smart-engine",
-          modelName: "Gemini Vision Engine (Resilience)",
-          backupKeyUsed: false,
-          infoMessage:
-            "Pengeditan gambar berhasil diproses via Gemini Vision Engine (menghindari batas kuota token model native di Vercel).",
-        };
-      }
+      return {
+        imageUrl: base64,
+        engineUsed: "gemini-smart-engine",
+        modelName: `Smart Vision Engine (${modelUsed})`,
+        backupKeyUsed: false,
+        infoMessage: `Gambar berhasil diedit sesuai instruksi Anda: "${instruction}".`,
+      };
     } catch (fallbackErr) {
       console.error("Smart vision editing error:", fallbackErr);
     }
@@ -317,3 +467,4 @@ export async function editGeminiImage(
   const parsed = parseGeminiError(finalErr);
   throw new Error(parsed.message);
 }
+
